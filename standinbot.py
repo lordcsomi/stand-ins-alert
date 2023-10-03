@@ -53,7 +53,7 @@ def check_table_for_changes():
     try:
         response = requests.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table', {'class': 'live tomorrow'})
+        table = soup.find('table', {'class': 'live today'})
 
         if table is not None:
             rows = table.find_all('tr')
