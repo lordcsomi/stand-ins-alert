@@ -6,10 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import time
 import csv
-import imaplib
-import email
 from email.mime.text import MIMEText
-import re
 from decouple import config
 
 # Get email credentials from environment variables
@@ -147,58 +144,10 @@ def get_email_body(message):
 
     return body
 
-def check_email():
-    try:
-        # Connect to the IMAP server
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
-        mail.login(sender_email, password)
-        
-        # Select the mailbox (inbox)
-        mail.select('inbox')
-
-        # Search for all unseen emails
-        result, data = mail.search(None, 'UNSEEN')
-        if result == 'OK':
-            email_ids = data[0].split()
-            for email_id in email_ids:
-                # Fetch the email by its ID
-                result, message_data = mail.fetch(email_id, '(RFC822)')
-                if result == 'OK':
-                    email_message = email.message_from_bytes(message_data[0][1])
-                    
-                    # Get the sender's email address
-                    sender = email_message['From']
-                    
-                    # Debugging: Print the subject and body
-                    print("Subject:", email_message['Subject'])
-                    body = get_email_body(email_message)
-                    print("Body:", body)
-                    
-                    # Check if the email subject or body contains "Hello" or "Hello!"
-                    subject = email_message['Subject']
-                    if re.search(r'\bHello\b|\bHello!\b', subject, re.IGNORECASE) or re.search(r'\bHello\b|\bHello!\b', body, re.IGNORECASE):
-                        # Compose a reply
-                        reply = MIMEText(f'Hello {sender},')
-                        reply['From'] = sender_email
-                        reply['To'] = sender
-                        reply['Subject'] = 'Re: ' + subject
-
-                        # Send the reply
-                        mail.sendmail(sender_email, sender, reply.as_string())
-
-                        # Mark the email as read
-                        mail.store(email_id, '+FLAGS', '\Seen')
-                    
-        # Logout from the server
-        mail.logout()
-    except Exception as e:
-        print("Error checking email:", str(e))
 
 # Call the setup function to initialize the global variables
 setup()
 
 # Call the check_table_for_changes function to check for table updates
-#check_table_for_changes()
+check_table_for_changes()
 
-# Call the check_email function to check for and reply to emails
-check_email()
