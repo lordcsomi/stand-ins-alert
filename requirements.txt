@@ -1,0 +1,9 @@
+# requirements.txt
+
+requests
+beautifulsoup4
+SQLAlchemy
+psycopg2-binary
+schedule
+python-dotenv
+email-validator
