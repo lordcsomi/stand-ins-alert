@@ -14,7 +14,7 @@ from datetime import datetime
 import schedule
 import time
 from sqlalchemy import create_engine, Column, Integer, String, Date, UniqueConstraint
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------
@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 # Email configuration
 BOT_EMAIL = os.getenv('BOT_EMAIL')
@@ -58,9 +58,9 @@ DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 # ---------------------------------------
 
 logging.basicConfig(
-    filename='app.log',
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
 )
 
 # ---------------------------------------
@@ -184,6 +184,7 @@ def read_emails():
 
         result, data = mail.search(None, '(UNSEEN)')
         mail_ids = data[0].split()
+        logging.info(f"Found {len(mail_ids)} new emails.")
 
         if not mail_ids:
             logging.info("No new emails found.")
@@ -259,23 +260,34 @@ def parse_client_info(body):
     return name, class_name, language
 
 def store_client_info(email_address, name, class_name, language):
-    """Stores client information in the database."""
+    """Stores or updates client information in the database."""
     session = SessionLocal()
     email_address = validate_email_address(email_address)
     if not email_address:
         logging.error(f"Invalid email address: {email_address}")
         return
 
-    client = Client(
-        email=email_address,
-        name=name,
-        class_name=class_name,
-        language=language
-    )
     try:
-        session.add(client)
-        session.commit()
-        logging.info(f"Registered new client: {email_address}")
+        # Check if client already exists
+        client = session.query(Client).filter(Client.email == email_address).first()
+        if client:
+            # Update existing client information
+            client.name = name
+            client.class_name = class_name
+            client.language = language
+            session.commit()
+            logging.info(f"Updated client info for: {email_address}")
+        else:
+            # Create new client
+            client = Client(
+                email=email_address,
+                name=name,
+                class_name=class_name,
+                language=language
+            )
+            session.add(client)
+            session.commit()
+            logging.info(f"Registered new client: {email_address}")
     except Exception as e:
         session.rollback()
         logging.error(f"Error storing client info: {e}")
@@ -366,12 +378,14 @@ def send_stop_email(to_email):
 # Notifier
 # ---------------------------------------
 
-def compose_message(entries):
+def compose_message(entries, is_new=True):
     """Composes a notification message from schedule entries."""
     messages = []
+    status = "New Entry" if is_new else "Updated Entry"
     for entry in entries:
         msg = (
-            f"Date: {entry.date}\n"
+            f"{status}\n"
+            f"Date: {entry.date.strftime('%Y-%m-%d')}\n"
             f"Class: {entry.class_name}\n"
             f"Lesson: {entry.lesson}\n"
             f"Subject: {entry.subject}\n"
@@ -379,7 +393,7 @@ def compose_message(entries):
             f"Missing Teacher: {entry.missing_teacher}\n"
             f"Room: {entry.room}\n"
             f"Comment: {entry.comment}\n"
-            "---------------------------"
+            "---------------------------\n\n"
         )
         messages.append(msg)
     return '\n'.join(messages)
@@ -398,12 +412,30 @@ def send_notifications(clients, message):
 
     logging.info(f"Sent notifications to {len(clients)} clients.")
 
+def notify_clients(entries, is_new=True):
+    """Notifies clients about new or updated schedule entries."""
+    session = SessionLocal()
+    class_entries = {}
+    for entry in entries:
+        class_entries.setdefault(entry.class_name, []).append(entry)
+
+    for class_name, entries in class_entries.items():
+        clients = session.query(Client).filter(Client.class_name == class_name).all()
+        if clients:
+            message = compose_message(entries, is_new)
+            send_notifications(clients, message)
+        else:
+            logging.info(f"No clients found for class {class_name}.")
+
+    session.close()
+
+
 # ---------------------------------------
 # Scheduler
 # ---------------------------------------
 
 def check_website():
-    """Checks the website for updates and processes new entries."""
+    """Checks the website for updates and processes new entries or updates existing ones."""
     logging.info("Checking website for updates...")
     html = fetch_webpage(URL)
     if html is None:
@@ -419,8 +451,13 @@ def check_website():
             continue
 
         new_entries = []
+        updated_entries = []
 
         for entry_data in entries:
+            # Skip entries that have missing critical information
+            if not entry_data['lesson'] or not entry_data['class'] or not entry_data['missing_teacher']:
+                continue
+
             existing_entry = session.query(ScheduleEntry).filter_by(
                 date=date_obj,
                 lesson=entry_data['lesson'],
@@ -429,6 +466,7 @@ def check_website():
             ).first()
 
             if not existing_entry:
+                # Add new entry
                 entry = ScheduleEntry(
                     date=date_obj,
                     stand_in_teacher=entry_data['stand_in_teacher'],
@@ -441,34 +479,43 @@ def check_website():
                 )
                 session.add(entry)
                 new_entries.append(entry)
+                logging.info(f"New entry added: {entry_data}")
+            else:
+                # Check for updates
+                changes = []
+                if existing_entry.stand_in_teacher != entry_data['stand_in_teacher']:
+                    existing_entry.stand_in_teacher = entry_data['stand_in_teacher']
+                    changes.append('stand_in_teacher')
+                if existing_entry.room != entry_data['room']:
+                    existing_entry.room = entry_data['room']
+                    changes.append('room')
+                if existing_entry.comment != entry_data['comment']:
+                    existing_entry.comment = entry_data['comment']
+                    changes.append('comment')
+                if changes:
+                    session.commit()  # Commit after updating the entry
+                    updated_entries.append((existing_entry, changes))
+                    logging.info(f"Entry updated: {entry_data}, Changes: {changes}")
 
+        # Commit session after processing all entries
         session.commit()
 
+        # Notify clients about new and updated entries
         if new_entries:
-            notify_clients(new_entries)
+            notify_clients(new_entries, is_new=True)
+        if updated_entries:
+            updated_entries_list = [entry for entry, _ in updated_entries]
+            notify_clients(updated_entries_list, is_new=False)
 
     session.close()
     logging.info("Website check complete.")
 
-def notify_clients(new_entries):
-    """Notifies clients about new schedule entries."""
-    session = SessionLocal()
-    class_entries = {}
-    for entry in new_entries:
-        class_entries.setdefault(entry.class_name, []).append(entry)
-
-    for class_name, entries in class_entries.items():
-        clients = session.query(Client).filter(Client.class_name == class_name).all()
-        if clients:
-            message = compose_message(entries)
-            send_notifications(clients, message)
-        else:
-            logging.info(f"No clients found for class {class_name}.")
-
-    session.close()
-
 def start_scheduler():
     """Starts the scheduler to run tasks at specified intervals."""
+    # debugging
+    check_website()
+    read_emails()
+
     schedule.every(CHECK_INTERVAL).minutes.do(check_website)
     schedule.every(EMAIL_CHECK_INTERVAL).minutes.do(read_emails)
 
@@ -479,7 +526,27 @@ def start_scheduler():
         time.sleep(1)
 
 def parse_date(date_str):
-    """Parses date string to a datetime.date object."""
+    """Parses date string to a datetime.date object using a replace dictionary."""
+    # Replace dictionary for Hungarian to English month names
+    replace_dict = {
+        'január': 'January',
+        'február': 'February',
+        'március': 'March',
+        'április': 'April',
+        'május': 'May',
+        'június': 'June',
+        'július': 'July',
+        'augusztus': 'August',
+        'szeptember': 'September',
+        'október': 'October',
+        'november': 'November',
+        'december': 'December'
+    }
+
+    # Replace Hungarian month names with English equivalents
+    for hu_month, en_month in replace_dict.items():
+        date_str = date_str.replace(hu_month, en_month)
+
     try:
         date_obj = datetime.strptime(date_str, '%Y. %B %d.').date()
         return date_obj
