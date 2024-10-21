@@ -10,7 +10,7 @@ import email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email_validator import validate_email, EmailNotValidError
-from datetime import datetime
+from datetime import datetime, timedelta
 import schedule
 import time
 from sqlalchemy import create_engine, Column, Integer, String, Date, UniqueConstraint
@@ -379,24 +379,50 @@ def send_stop_email(to_email):
 # ---------------------------------------
 
 def compose_message(entries, is_new=True):
-    """Composes a notification message from schedule entries."""
+    """Composes a notification message from schedule entries, returns HTML content."""
     messages = []
-    status = "New Entry" if is_new else "Updated Entry"
+    status = "🆕 Lesson Change" if is_new else "✏️ Updated Entry"
+
+    # Get today's date and tomorrow's date
+    today = datetime.now().date()
+    tomorrow = today + timedelta(days=1)
+
     for entry in entries:
-        msg = (
-            f"{status}\n"
-            f"Date: {entry.date.strftime('%Y-%m-%d')}\n"
-            f"Class: {entry.class_name}\n"
-            f"Lesson: {entry.lesson}\n"
-            f"Subject: {entry.subject}\n"
-            f"Stand-in Teacher: {entry.stand_in_teacher}\n"
-            f"Missing Teacher: {entry.missing_teacher}\n"
-            f"Room: {entry.room}\n"
-            f"Comment: {entry.comment}\n"
-            "---------------------------\n\n"
-        )
+        entry_date = entry.date
+        # Check if the date is today or tomorrow
+        date_str = entry_date.strftime('%Y-%m-%d')
+        if entry_date == today:
+            date_str += " (Today)"
+        elif entry_date == tomorrow:
+            date_str += " (Tomorrow)"
+
+        # Build the HTML content for the entry
+        msg = f"""
+        <div style="border:1px solid #ccc; padding:15px; margin-bottom:15px; border-radius:10px;">
+            <h2 style="color:#2E86C1;">{status}</h2>
+            <p style="font-size:18px;"><strong>📅 Date:</strong> {date_str}</p>
+            <p style="font-size:18px;"><strong>🏫 Class:</strong> {entry.class_name}</p>
+            <p style="font-size:18px;"><strong>📖 Lesson:</strong> {entry.lesson}</p>
+            <p style="font-size:18px;"><strong>🧪 Subject:</strong> {entry.subject}</p>
+            <p style="font-size:18px;"><strong>👩‍🏫 Stand-in Teacher:</strong> {entry.stand_in_teacher}</p>
+            <p style="font-size:18px;"><strong>❌👨‍🏫 Missing Teacher:</strong> {entry.missing_teacher}</p>
+            <p style="font-size:18px;"><strong>🚪 Room:</strong> {entry.room}</p>
+            <p style="font-size:18px;"><strong>💬 Comment:</strong> {entry.comment}</p>
+        </div>
+        """
         messages.append(msg)
-    return '\n'.join(messages)
+
+    # Combine the messages
+    html_content = f"""
+    <html>
+    <body>
+        <div style="font-family:Arial, sans-serif; font-size:16px; color:#333;">
+            {''.join(messages)}
+        </div>
+    </body>
+    </html>
+    """
+    return html_content
 
 def send_notifications(clients, message):
     """Sends notifications to clients via their preferred channels."""
