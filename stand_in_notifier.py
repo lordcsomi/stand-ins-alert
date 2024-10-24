@@ -16,6 +16,7 @@ import time
 from sqlalchemy import create_engine, Column, Integer, String, Date, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError
 
 # ---------------------------------------
 # Configuration
@@ -235,8 +236,51 @@ def handle_start_command(from_email, body):
     name, class_name, language = parse_client_info(body)
     if name and class_name and language:
         store_client_info(from_email, name, class_name, language)
-        send_confirmation_email(from_email, name, class_name, language)
+        
+        # Attempt to confirm client registration with retry logic
+        attempts = 0
+        max_attempts = 5
+        while attempts < max_attempts:
+            session = None
+            try:
+                session = SessionLocal()
+                client = session.query(Client).filter_by(
+                    email=from_email,
+                    name=name,
+                    class_name=class_name,
+                    language=language
+                ).first()
+                
+                if client:
+                    send_confirmation_email(from_email, name, class_name, language)
+                    logging.info(f"Successfully registered and confirmed client: {from_email}")
+                    break
+                else:
+                    attempts += 1
+                    logging.warning(f"Client not found in DB. Retry attempt {attempts}/{max_attempts}")
+                    time.sleep(1)  # Wait for a second before retrying
+            except OperationalError as e:
+                attempts += 1
+                logging.error(f"Database error while confirming client: {e}. Attempt {attempts}/{max_attempts}")
+                time.sleep(1)  # Wait for a second before retrying
+            finally:
+                if session:
+                    session.close()
+        else:
+            # Send error email if all retry attempts fail
+            logging.error(f"Failed to confirm client registration after {max_attempts} attempts: {from_email}")
+            error_html_content = f"""
+            <html>
+            <body style="background-color:#ffcccc; padding:20px; border-radius:10px;">
+                <h2 style="color:#cc0000;">Error</h2>
+                <p>Dear {name},</p>
+                <p>We encountered an issue while processing your registration. Please try again later.</p>
+            </body>
+            </html>
+            """
+            send_email(from_email, "Registration Error", error_html_content)
     else:
+        # Send usage instructions if input data is missing or incorrect
         send_usage_instructions(from_email)
 
 def handle_stop_command(from_email):
